@@ -1,0 +1,62 @@
+name: Build and Release
+on:
+  push:
+    branches: [main]
+    tags: ['[0-9]*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing numeric release tag
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: battlemoon-clock-${{ inputs.version || github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ inputs.version || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.version && format('refs/tags/{0}', inputs.version) || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - run: npm run prepare:components
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: page
+      - run: npm run build && npm test && npm run check && npm run package && npm run check -- --package
+      - uses: actions/upload-artifact@v7
+        with:
+          name: battlemoon-clock
+          path: artifacts/*.*
+          if-no-files-found: error
+          retention-days: 14
+  release:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: battlemoon-clock
+          path: artifacts
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.version || github.ref_name }}
+        run: |
+          test "$RELEASE_TAG" = '0.1.0'
+          gh release create "$RELEASE_TAG" artifacts/*.deb artifacts/*.md5 artifacts/*.sha256 artifacts/*-source.zip --verify-tag --draft --title "Battlemoon Clock $RELEASE_TAG" --notes "MOS page and widget using shared Clock 0.1.1. Frontend-only architecture all; host Vue federation. Live installation acceptance remains separate."
+          gh release edit "$RELEASE_TAG" --draft=false --latest
